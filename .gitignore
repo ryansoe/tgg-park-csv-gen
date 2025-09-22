@@ -1,0 +1,7 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Local cache
+cache/
