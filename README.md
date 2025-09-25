@@ -7,7 +7,7 @@ Generate a CSV of interesting places inside a park using OpenStreetMap via OSMnx
 - Finds a park polygon (either a specific park by name or the largest park in a city)
 - Pulls POIs (historic, tourism, leisure, amenity, natural, man_made)
 - Scores and filters them for interest
-- Selects a walkable subset (default ≤ 2 total miles, up to 10 spots)
+- Selects a walkable subset (default ≤ 3 total miles, up to 15 spots)
 - Exports a CSV with coordinates and metadata
 
 ## Installation
@@ -44,8 +44,8 @@ python park_game_generator.py --park "Golden Gate Park, San Francisco" --output 
 - `--park` string: Specific park name or query string.
 - `--city` string: City query; script will pick the largest park inside the city.
 - `--output` string: Output CSV path (default `park_pois.csv`).
-- `--max-points` int: Max number of POIs to select (default 10).
-- `--max-miles` float: Max total walking miles for the greedy route heuristic (default 2.0).
+- `--max-points` int: Max number of POIs to select (default 15).
+- `--max-miles` float: Max total walking miles for the greedy route heuristic (default 3.0).
 - `--min-park-area-m2` float: Minimum park area when using `--city` (default 300,000 m²).
 
 Note: `--park` and `--city` are mutually exclusive. If neither is provided, the default is the largest park in Pittsburgh, PA.
@@ -76,7 +76,7 @@ Note: `--park` and `--city` are mutually exclusive. If neither is provided, the 
    - Boosts for tokens found in tags/name (e.g., museum, viewpoint, memorial, plaque, heritage, statue, garden, bridge).
    - Penalties for utilitarian tokens (e.g., toilet, parking, bench, waste).
    - Keep rows with positive total score.
-4. Selection (≤ 2 miles by default)
-   - Sort by score and run a greedy nearest-neighbor: start at the highest score, add the next best nearby (score − distance) while total distance ≤ `--max-miles`, up to `--max-points`.
+4. Selection (≤ 3 miles by default)
+   - Sort by score and run a greedy nearest-neighbor: start at the highest score, add the next best nearby (score − distance) while total distance ≤ `--max-miles`, up to `--max-points`. Unnamed POIs are excluded from selection.
 5. Export
    - Write selected rows to CSV with the columns listed above.

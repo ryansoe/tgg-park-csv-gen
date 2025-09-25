@@ -239,7 +239,11 @@ def score_pois(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def cluster_and_select(df: pd.DataFrame, max_points: int = 10, max_total_miles: float = 2.0) -> pd.DataFrame:
+def cluster_and_select(df: pd.DataFrame, max_points: int = 15, max_total_miles: float = 3.0) -> pd.DataFrame:
+    if df.empty:
+        return df
+    # Exclude unnamed POIs from consideration
+    df = df[df["name"].astype(str).str.strip().str.lower() != "unnamed"].reset_index(drop=True)
     if df.empty:
         return df
 
@@ -320,8 +324,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     group.add_argument("--park", type=str, help="Specific park name or query string")
     group.add_argument("--city", type=str, help="City query; will pick the largest park")
     parser.add_argument("--output", type=str, default="park_pois.csv", help="Output CSV path")
-    parser.add_argument("--max-points", type=int, default=10, help="Max number of POIs to select")
-    parser.add_argument("--max-miles", type=float, default=2.0, help="Max total walking miles")
+    parser.add_argument("--max-points", type=int, default=15, help="Max number of POIs to select")
+    parser.add_argument("--max-miles", type=float, default=3.0, help="Max total walking miles")
     parser.add_argument("--min-park-area-m2", type=float, default=300_000.0, help="Minimum area for candidate parks when using --city")
     # Sensible default: largest park in Pittsburgh
     parser.set_defaults(city="Pittsburgh, Pennsylvania", park=None)
