@@ -9,6 +9,7 @@ Generate a CSV of interesting places inside a park using OpenStreetMap via OSMnx
 - Scores and filters them for interest
 - Selects a walkable subset (default ≤ 3 total miles, up to 15 spots)
 - Exports a CSV with coordinates and metadata
+- Optional: Enrich with Google Places to add ratings and place IDs
 
 ## Installation
 
@@ -47,6 +48,10 @@ python park_game_generator.py --park "Golden Gate Park, San Francisco" --output 
 - `--max-points` int: Max number of POIs to select (default 15).
 - `--max-miles` float: Max total walking miles for the greedy route heuristic (default 3.0).
 - `--min-park-area-m2` float: Minimum park area when using `--city` (default 300,000 m²).
+- `--distance-penalty` float: Multiplier in rank = score − (penalty × miles) (default 5.0).
+- `--enable-google-places` flag: Enrich POIs using Google Places (requires API key).
+- `--google-api-key` string: Google Maps/Places API key (or set `GOOGLE_MAPS_API_KEY`).
+- `--google-radius-meters` int: Search radius when matching Places (default 150).
 
 Note: `--park` and `--city` are mutually exclusive. If neither is provided, the default is the largest park in Pittsburgh, PA.
 
@@ -60,8 +65,14 @@ Note: `--park` and `--city` are mutually exclusive. If neither is provided, the 
 - `has_plaque`: Boolean flag based on tags/inscriptions.
 - `wikidata`, `wikipedia`, `image`: Enrichment fields when present.
 - `operator`, `website`, `start_date`, `opening_hours`: Commonly useful tags flattened.
-- `extra_info`: JSON string of all tags from OSM.
 - `osmid`: OSM element identifier (e.g., `('node', 12345)`).
+- `google_place_id`, `google_name`, `google_rating`, `google_ratings_total`: from Google Places enrichment.
+
+### Google Places enrichment
+
+1. Obtain a Google Maps Platform API key with Places API enabled.
+2. Provide the key either via `--google-api-key` or env var `GOOGLE_MAPS_API_KEY`.
+3. Run with `--enable-google-places` to enrich POIs. The script uses Places Text Search with a location bias around each POI's coordinates, caches responses under `cache/google_places/`, and adds rating-based boosts to the score.
 
 ## How the algorithm works (brief)
 
@@ -77,6 +88,6 @@ Note: `--park` and `--city` are mutually exclusive. If neither is provided, the 
    - Penalties for utilitarian tokens (e.g., toilet, parking, bench, waste).
    - Keep rows with positive total score.
 4. Selection (≤ 3 miles by default)
-   - Sort by score and run a greedy nearest-neighbor: start at the highest score, add the next best nearby (score − distance) while total distance ≤ `--max-miles`, up to `--max-points`. Unnamed POIs are excluded from selection.
+   - Sort by score and run a greedy nearest-neighbor: start at the highest score, add the next best nearby using rank = score − (distance_penalty × miles) while total distance ≤ `--max-miles`, up to `--max-points`. Default `distance_penalty` is 5. Unnamed POIs are excluded from selection.
 5. Export
    - Write selected rows to CSV with the columns listed above.

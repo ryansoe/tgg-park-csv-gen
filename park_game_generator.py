@@ -3,6 +3,10 @@
 import argparse
 import json
 import sys
+import os
+import re
+import time
+import hashlib
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -10,6 +14,7 @@ import geopandas as gpd
 import osmnx as ox
 import pandas as pd
 from shapely.geometry import MultiPolygon, Polygon
+import requests
 
 # OSMnx / Overpass configuration
 ox.settings.use_cache = True
@@ -239,7 +244,7 @@ def score_pois(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def cluster_and_select(df: pd.DataFrame, max_points: int = 15, max_total_miles: float = 3.0) -> pd.DataFrame:
+def cluster_and_select(df: pd.DataFrame, max_points: int = 15, max_total_miles: float = 3.0, distance_penalty: float = 1.0) -> pd.DataFrame:
     if df.empty:
         return df
     # Exclude unnamed POIs from consideration
@@ -275,7 +280,7 @@ def cluster_and_select(df: pd.DataFrame, max_points: int = 15, max_total_miles: 
             d = haversine_miles(last.lat, last.lon, cand.lat, cand.lon)
             if total_miles + d > max_total_miles:
                 continue
-            rank = cand.score - d  # balance quality and distance
+            rank = cand.score - (distance_penalty * d)  # balance quality and distance
             if rank > best_rank:
                 best_rank = rank
                 best_idx = idx
@@ -294,16 +299,180 @@ def export_csv(df: pd.DataFrame, park_name: str, output_path: str) -> None:
     # Extract a few tag fields into flat columns
     for key in ["operator", "website", "addr:city", "start_date", "opening_hours"]:
         df_out[key] = df_out["tags"].apply(lambda t: t.get(key) if isinstance(t, dict) else None)
-    df_out["extra_info"] = df_out["tags"].apply(lambda t: json.dumps(t) if isinstance(t, dict) else str(t))
     cols = [
         "park", "name", "lat", "lon", "category", "score", "has_plaque",
-        "wikidata", "wikipedia", "image", "operator", "website", "start_date", "opening_hours", "extra_info", "osmid"
+        "wikidata", "wikipedia", "image", "operator", "website", "start_date", "opening_hours", "osmid",
+        "google_place_id", "google_name", "google_rating", "google_ratings_total"
     ]
     df_out = df_out[[c for c in cols if c in df_out.columns]]
     df_out.to_csv(output_path, index=False)
 
 
-def process_park(park: Optional[str], city: Optional[str], output_csv: str, max_points: int, max_total_miles: float, min_park_area_m2: float) -> Tuple[str, pd.DataFrame]:
+def _ensure_cache_dir() -> str:
+    base_dir = os.path.join(os.path.dirname(__file__), "cache", "google_places")
+    os.makedirs(base_dir, exist_ok=True)
+    return base_dir
+
+
+def _normalize_name(name: str) -> List[str]:
+    s = re.sub(r"[^\w\s]", " ", str(name).lower())
+    tokens = [t for t in s.split() if t]
+    return tokens
+
+
+def _token_jaccard(a: str, b: str) -> float:
+    ta = set(_normalize_name(a))
+    tb = set(_normalize_name(b))
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    from math import radians, sin, cos, asin, sqrt
+    R_km = 6371.0088
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2) ** 2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2) ** 2
+    c = 2 * asin(sqrt(a))
+    return R_km * c * 1000.0
+
+
+def _cache_key(name: str, lat: float, lon: float, radius_m: int) -> str:
+    sig = f"{name}|{lat:.5f}|{lon:.5f}|{radius_m}"
+    return hashlib.sha1(sig.encode("utf-8")).hexdigest()
+
+
+def _read_cache(cache_dir: str, key: str) -> Optional[dict]:
+    path = os.path.join(cache_dir, f"{key}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _write_cache(cache_dir: str, key: str, data: dict) -> None:
+    path = os.path.join(cache_dir, f"{key}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _google_text_search(name: str, lat: float, lon: float, radius_meters: int, api_key: str, timeout_sec: int = 10) -> Optional[dict]:
+    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+    params = {
+        "key": api_key,
+        "query": name,
+        "location": f"{lat},{lon}",
+        "radius": str(radius_meters),
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=timeout_sec)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if data.get("status") not in {"OK", "ZERO_RESULTS"}:
+            return None
+        results = data.get("results", [])
+        if not results:
+            return None
+        # Rank results by name similarity and proximity
+        ranked = []
+        for r in results:
+            r_name = r.get("name") or ""
+            r_loc = r.get("geometry", {}).get("location", {})
+            r_lat = r_loc.get("lat")
+            r_lng = r_loc.get("lng")
+            if r_lat is None or r_lng is None:
+                continue
+            dist_m = _haversine_meters(lat, lon, float(r_lat), float(r_lng))
+            name_sim = _token_jaccard(name, r_name)
+            rank = name_sim * 2.0 - (dist_m / 1000.0)
+            ranked.append((rank, name_sim, -dist_m, r))
+        if not ranked:
+            return None
+        ranked.sort(reverse=True)
+        best = ranked[0][3]
+        return best
+    except Exception:
+        return None
+
+
+def _rating_boost(rating: Optional[float], ratings_total: Optional[int]) -> float:
+    if rating is None:
+        return 0.0
+    try:
+        r = float(rating)
+    except Exception:
+        return 0.0
+    boost = 0.0
+    if r >= 4.8:
+        boost = 2.0
+    elif r >= 4.5:
+        boost = 1.5
+    elif r >= 4.3:
+        boost = 1.0
+    elif r >= 4.0:
+        boost = 0.5
+    # Lightly weight by review count (cap at +1 extra)
+    try:
+        n = int(ratings_total or 0)
+        if n >= 50:
+            boost += min(0.5, n / 1000.0)
+    except Exception:
+        pass
+    return boost
+
+
+def enrich_with_google_places(df: pd.DataFrame, api_key: str, radius_meters: int = 150, sleep_between_s: float = 0.1) -> pd.DataFrame:
+    if df.empty:
+        return df
+    cache_dir = _ensure_cache_dir()
+    df = df.copy()
+    # Prepare columns
+    for c in ["google_place_id", "google_name", "google_rating", "google_ratings_total"]:
+        if c not in df.columns:
+            df[c] = None
+    if "score" not in df.columns:
+        df["score"] = 0.0
+    for idx, row in df.iterrows():
+        name = str(row.get("name") or "").strip()
+        if not name or name.lower() == "unnamed":
+            continue
+        lat = float(row.get("lat"))
+        lon = float(row.get("lon"))
+        cache_key = _cache_key(name, lat, lon, radius_meters)
+        cached = _read_cache(cache_dir, cache_key)
+        place = cached
+        if place is None:
+            place = _google_text_search(name, lat, lon, radius_meters, api_key)
+            if place is not None:
+                _write_cache(cache_dir, cache_key, place)
+            # be polite
+            if sleep_between_s > 0:
+                time.sleep(sleep_between_s)
+        if not place:
+            continue
+        place_id = place.get("place_id")
+        g_name = place.get("name")
+        rating = place.get("rating")
+        ratings_total = place.get("user_ratings_total")
+        df.at[idx, "google_place_id"] = place_id
+        df.at[idx, "google_name"] = g_name
+        df.at[idx, "google_rating"] = rating
+        df.at[idx, "google_ratings_total"] = ratings_total
+        df.at[idx, "score"] = float(df.at[idx, "score"]) + _rating_boost(rating, ratings_total)
+    return df
+
+
+def process_park(park: Optional[str], city: Optional[str], output_csv: str, max_points: int, max_total_miles: float, min_park_area_m2: float, enable_google_places: bool = False, google_api_key: Optional[str] = None, google_radius_meters: int = 150, distance_penalty: float = 1.0) -> Tuple[str, pd.DataFrame]:
     if park:
         park_name, polygon = get_park_polygon_by_name(park)
     elif city:
@@ -313,7 +482,14 @@ def process_park(park: Optional[str], city: Optional[str], output_csv: str, max_
 
     pois = query_pois_within_polygon(polygon)
     scored = score_pois(pois)
-    selected = cluster_and_select(scored, max_points=max_points, max_total_miles=max_total_miles)
+    if enable_google_places:
+        if not google_api_key:
+            # allow env var fallback
+            google_api_key = os.getenv("GOOGLE_MAPS_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not google_api_key:
+            raise ValueError("Google Places enrichment enabled but no API key provided (use --google-api-key or set GOOGLE_MAPS_API_KEY)")
+        scored = enrich_with_google_places(scored, api_key=google_api_key, radius_meters=google_radius_meters)
+    selected = cluster_and_select(scored, max_points=max_points, max_total_miles=max_total_miles, distance_penalty=distance_penalty)
     export_csv(selected, park_name=park_name, output_path=output_csv)
     return park_name, selected
 
@@ -327,6 +503,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--max-points", type=int, default=15, help="Max number of POIs to select")
     parser.add_argument("--max-miles", type=float, default=3.0, help="Max total walking miles")
     parser.add_argument("--min-park-area-m2", type=float, default=300_000.0, help="Minimum area for candidate parks when using --city")
+    parser.add_argument("--distance-penalty", type=float, default=5.0, help="Multiplier on distance in rank = score − (penalty × miles)")
+    parser.add_argument("--enable-google-places", action="store_true", help="Enrich POIs using Google Places (adds ratings and IDs)")
+    parser.add_argument("--google-api-key", type=str, default=None, help="Google Maps/Places API key (or set GOOGLE_MAPS_API_KEY)")
+    parser.add_argument("--google-radius-meters", type=int, default=150, help="Search radius for Places matching (meters)")
     # Sensible default: largest park in Pittsburgh
     parser.set_defaults(city="Pittsburgh, Pennsylvania", park=None)
     return parser.parse_args(argv)
@@ -342,6 +522,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_points=args.max_points,
             max_total_miles=args.max_miles,
             min_park_area_m2=args.min_park_area_m2,
+            enable_google_places=args.enable_google_places,
+            google_api_key=args.google_api_key,
+            google_radius_meters=args.google_radius_meters,
+            distance_penalty=args.distance_penalty,
         )
         print(f"Selected {len(df)} POIs for {park_name}. Wrote: {args.output}")
         return 0

@@ -5,3 +5,5 @@ env/
 
 # Local cache
 cache/
+
+.env
