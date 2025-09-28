@@ -1,0 +1,6 @@
+park,name,lat,lon,category,score,has_plaque,wikidata,wikipedia,image,operator,website,start_date,opening_hours,osmid,google_place_id,google_name,google_rating,google_ratings_total
+"Forest Park, Portland, Multnomah County, Oregon, United States",Danford Balch Homesite,45.5358981,-122.712276,historic,17.0,True,,,,nan,nan,,nan,"('node', 10750076027)",,,,
+"Forest Park, Portland, Multnomah County, Oregon, United States",Wildwood Trail: Bridge viewpoint,45.5273786,-122.7294919,tourism,15.074,False,,,,nan,nan,,nan,"('node', 11612568580)",ChIJrXsMtZAJlVQRCL6A00idTkc,Wildwood Trail,4.8,74
+"Forest Park, Portland, Multnomah County, Oregon, United States",Portland Heritage Tree #134,45.5279186,-122.7254472,natural,12.0,False,,,,nan,nan,,nan,"('node', 5686315423)",ChIJo1I6BACnlVQRHQvyGSfFTLc,Oregon Myrtle - Heritage Tree,5,3
+"Forest Park, Portland, Multnomah County, Oregon, United States",Witch's Castle,45.528294,-122.7250787,historic,9.5,False,Q105200533,"en:Stone House (Portland, Oregon)",,nan,nan,,nan,"('node', 942667370)",ChIJ09XitZYJlVQRAK4tqScJles,Witch's Castle,4.3,1241
+"Forest Park, Portland, Multnomah County, Oregon, United States",Pittock Bird Sanctuary,45.52868519280313,-122.73114195810447,leisure,5.5,False,,,,Audubon Society of Portland,nan,,nan,"('way', 130712882)",ChIJhR0bL5gJlVQRDSwh5ixHICA,Pittock Bird Sanctuary,4.5,45

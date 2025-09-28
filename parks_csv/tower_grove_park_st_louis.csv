@@ -1,0 +1,9 @@
+park,name,lat,lon,category,score,has_plaque,wikidata,wikipedia,image,operator,website,start_date,opening_hours,osmid,google_place_id,google_name,google_rating,google_ratings_total
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",Alexander von Humboldt,38.6062481,-90.2549251,tourism,10.0,False,,,,,,nan,,"('node', 5835159038)",ChIJ-bka-aS12IcRhRx2x_XsZ2w,Alexander Von Humboldt sculpture,5,1
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",William Shakespeare,38.6065352,-90.2579623,tourism,10.0,False,,,,,,1878-04-23,,"('node', 5835159039)",ChIJy1c4F1S02IcRv1hX_ISsYPE,William Shakespeare Statue,4.8,16
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",Recumbent Stags,38.6080997,-90.2577146,tourism,8.0,False,,,,,,1822,,"('node', 12944063545)",ChIJJYDNCyi12IcRt8gz-sys04M,Recumbent Stags Sculptures,5,1
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",Recumbent Stags,38.608169,-90.2584167,tourism,8.0,False,,,,,,1822,,"('node', 12944063544)",ChIJJYDNCyi12IcRt8gz-sys04M,Recumbent Stags Sculptures,5,1
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",Fountain Pond,38.60696678150886,-90.25673969876337,natural,4.0,False,,,,,,nan,,"('way', 172707058)",ChIJJVamPNW12IcRf9OPU0SrAPw,Fountain Pond,4.8,19
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",Lily Ponds,38.607280313262926,-90.25744934900347,natural,3.0,False,,,,,,nan,,"('relation', 19277881)",ChIJMT-kHie12IcREMM2Ymh1gHs,Water Lily Ponds,5,3
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",Caroline Loughlin Fountain,38.6086394,-90.2668555,natural,3.5,False,,,,,,nan,,"('node', 12944063315)",ChIJ6_LKFj-12IcRF5SshozkkyQ,Colonial Daughter Fountain,4.7,9
+"Tower Grove Park, 4257, St. Louis, Missouri, 63110, United States",Headwaters,38.6036455,-90.2450495,natural,2.5,False,,,,,,nan,,"('node', 12943963658)",ChIJk2HFJME22YcRz9p9gVMjsO4,Headwaters Resources,4.7,6

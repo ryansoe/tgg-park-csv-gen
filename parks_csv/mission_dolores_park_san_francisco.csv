@@ -1,0 +1,3 @@
+park,name,lat,lon,category,score,has_plaque,wikidata,wikipedia,image,operator,website,start_date,opening_hours,osmid,google_place_id,google_name,google_rating,google_ratings_total
+"Mission Dolores Park, 20th Street, Castro District, Mission District, San Francisco, California, 94114, United States",Miguel Hidalgo Memorial Statue,37.7597368,-122.4276683,tourism,15.5,False,,,,,,,,"('node', 5566754390)",ChIJwZ6j9W5_j4ARIXrnutv971I,Miguel Hidalgo Statue,4.6,19
+"Mission Dolores Park, 20th Street, Castro District, Mission District, San Francisco, California, 94114, United States",Mexico's Liberty Bell,37.7598193,-122.4262718,historic,12.0,False,,,,,,,,"('node', 9756158393)",ChIJDYTkog9_j4AR84d20CA47MY,Mexico Liberty Bell,4.8,13

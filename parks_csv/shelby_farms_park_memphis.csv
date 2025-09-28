@@ -1,0 +1,5 @@
+park,name,lat,lon,category,score,has_plaque,wikidata,wikipedia,image,operator,website,start_date,opening_hours,osmid,google_place_id,google_name,google_rating,google_ratings_total
+"Shelby Farms Park, Cordova, Memphis, Shelby County, West Tennessee, Tennessee, United States",Electric Overlook,35.1156695,-89.8066377,tourism,4.0,False,,,,nan,nan,,nan,"('node', 10293686885)",ChIJLUuQwbCbf4gRakri7dr3yDQ,Electric Overlook,,
+"Shelby Farms Park, Cordova, Memphis, Shelby County, West Tennessee, Tennessee, United States",Aquifer Island,35.1168617,-89.814757,tourism,4.0,False,,,,nan,nan,,nan,"('node', 13011836682)",,,,
+"Shelby Farms Park, Cordova, Memphis, Shelby County, West Tennessee, Tennessee, United States",Ducks Unlimited National Headquarters,35.1308209,-89.8080439,leisure,2.0,False,,,,Ducks Unlimited,https://www.ducks.org/,,Mo-Fr 08:00-17:00,"('node', 10189100936)",,,,
+"Shelby Farms Park, Cordova, Memphis, Shelby County, West Tennessee, Tennessee, United States",Beaver Lake,35.14128088987817,-89.8209187870521,natural,2.0,False,,,,nan,nan,,nan,"('way', 127381945)",ChIJZcSrQ46cf4gR9ea0lx5Ztz0,Beaver Lake,4.3,11

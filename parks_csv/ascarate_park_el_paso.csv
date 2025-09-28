@@ -1,0 +1,3 @@
+park,name,lat,lon,category,score,has_plaque,wikidata,wikipedia,image,operator,website,start_date,opening_hours,osmid,google_place_id,google_name,google_rating,google_ratings_total
+"Ascarate Park, Lakeside, El Paso, El Paso County, Texas, United States",Ascarate Lake,31.748420163655435,-106.40285946003512,natural,2.125,False,,,,,,,,"('relation', 3559249)",ChIJjY3_wplb54YRS_A-kwo6s-Q,Ascarate Lake,4.3,125
+"Ascarate Park, Lakeside, El Paso, El Paso County, Texas, United States",Ascarate Lake,31.751543475907894,-106.40412898430219,natural,2.125,False,,,,,,,,"('relation', 3559344)",ChIJjY3_wplb54YRS_A-kwo6s-Q,Ascarate Lake,4.3,125
