@@ -441,6 +441,10 @@ def fetch_scored_pois_in_corridor(
 
     df = query_pois_within_polygon(corridor)
     df = score_pois(df)
+    # Exclude unnamed POIs to keep the narrative meaningful
+    if not df.empty and "name" in df.columns:
+        names = df["name"].astype(str).str.strip()
+        df = df[(names.str.len() > 0) & (names.str.lower() != "unnamed")].reset_index(drop=True)
     if min_score is not None and not df.empty:
         df = df[df["score"] >= float(min_score)].reset_index(drop=True)
     if enable_google_places and not df.empty:
