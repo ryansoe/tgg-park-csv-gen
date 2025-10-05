@@ -8,6 +8,7 @@ fiona==1.10.1
 geopandas==0.14.4
 haversine==2.8.1
 idna==3.10
+joblib==1.5.2
 networkx==3.3
 numpy==1.26.4
 osmnx==1.9.4
@@ -18,7 +19,10 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
 pytz==2025.2
 requests==2.32.3
+scikit-learn==1.7.2
+scipy==1.15.3
 shapely==2.0.4
 six==1.17.0
+threadpoolctl==3.6.0
 tzdata==2025.2
 urllib3==2.5.0
