@@ -20,6 +20,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip setuptools wheel
 pip install -r requirements.txt
+
+# If you see "scikit-learn must be installed to search an unprojected graph":
+pip install scikit-learn
 ```
 
 ## Usage
