@@ -1,0 +1,19 @@
+Walking tour from: 42.33704,-71.17169
+Destination: 42.33578,-71.16793
+Total distance: 0.29 mi
+Estimated time: 6 min
+
+Directions:
+1. Head S on path for 93 m
+   - You'll pass on your right Waban Hill (natural).
+   - You'll pass on your right Waban Hill Reservoir (natural).
+2. Turn right onto path for 120 m
+   - You'll pass on your left WZBC-FM (Newton) (man_made).
+3. Turn left onto path for 18 m
+4. Turn slight left onto path for 53 m
+5. Turn right onto path for 5 m
+6. Turn left onto path for 59 m
+7. Turn right onto path for 110 m
+   - Ahead on your right: Robsham Theater Arts Center (amenity).
+
+Enjoy your walk!
