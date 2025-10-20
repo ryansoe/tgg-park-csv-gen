@@ -1,0 +1,31 @@
+Walking tour from: Veterans Memorial
+Destination: AirSpace Museum
+Total distance: 0.61 mi
+Estimated time: 13 min
+
+Directions:
+
+Walk to the trail.
+
+Begin your journey at the Veterans Memorial, where the solemn tribute to those who served stands tall. As you step onto the trail, take a moment to appreciate the serene surroundings, with the gentle rustle of leaves and the distant sounds of laughter from nearby attractions. Walk straight for about 25 meters, allowing the tranquility of the park to envelop you.
+Continue along the path for another 10 meters, where the vibrant flora of Balboa Park begins to reveal itself. The colors and scents of blooming flowers create a picturesque scene, inviting you to pause and soak in the beauty.
+As you approach a fork in the trail, turn right onto Zoo Place. This short stretch of 9 meters leads you closer to the enchanting world of the San Diego Zoo, where the excitement of wildlife awaits just beyond the trees.
+Next, turn left onto Park Boulevard, a grand thoroughfare that stretches for 240 meters. Here, you’ll find yourself surrounded by stunning architecture and the lively atmosphere of Balboa Park. Keep an eye out for the Spanish Village Art Center on your right, a vibrant hub of local artists showcasing their work in a charming setting.
+After soaking in the artistic vibes, turn right onto Village Place. This quaint street, lined with lush greenery, invites you to stroll for 170 meters. The air is filled with the sounds of laughter and joy from families enjoying the nearby attractions.
+Continue on Village Place for just a few more steps, about 8 meters, as you approach a delightful intersection that leads you deeper into the heart of Balboa Park.
+Now, turn right onto Old Globe Way, where the path unfolds for 160 meters. This charming avenue is named after the renowned Old Globe Theatre, a cultural gem that hosts a variety of performances throughout the year. As you walk, take in the vibrant atmosphere and the artistic spirit that permeates the air.
+
+You will soon arrive at the AirSpace Museum, where the wonders of aviation and space exploration await your discovery.
+
+Enjoy your walk!
+
+Command used to generate this tour:
+
+python3 walking_tour_generator.py \
+  --start "32.73429,-117.14409" \
+  --end "32.73268,-117.14969" \
+  --start-label "Veterans Memorial" \
+  --end-label "AirSpace Museum" \
+  --output walking_tours/balboa_complex.txt \
+  --max-pois 10 \
+  --llm-enabled \

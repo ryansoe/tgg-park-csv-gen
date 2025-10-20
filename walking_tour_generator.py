@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
+import json
 import math
 import os
+import re
 import sys
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
@@ -12,6 +15,7 @@ import networkx as nx
 import osmnx as ox
 import pandas as pd
 from shapely.geometry import LineString, Point, Polygon
+from shapely.ops import transform
 
 # Reuse POI pipeline and utilities from the existing project to avoid duplication
 from park_game_generator import (
@@ -99,6 +103,28 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--enable-google-places", action="store_true", help="Enrich POIs with Google ratings")
     parser.add_argument("--google-api-key", default=None, help="Google API key (or set GOOGLE_MAPS_API_KEY)")
     parser.add_argument("--google-radius-meters", type=int, default=150, help="Search radius for Places matching (m)")
+    
+    # Label customization
+    parser.add_argument("--start-label", default=None, help="Override display name for start location")
+    parser.add_argument("--end-label", default=None, help="Override display name for end location")
+    
+    # Distance display
+    parser.add_argument("--hide-step-distances", action="store_true", help="Omit per-step distance text")
+    
+    # POI callout tuning
+    parser.add_argument("--max-callouts-per-step", type=int, default=1, help="Max POI callouts per step")
+    parser.add_argument("--callout-style", choices=["minimal", "descriptive"], default="minimal", help="Callout verbosity")
+    parser.add_argument("--preferred-categories", default=None, help="CSV list of preferred POI categories")
+    parser.add_argument("--blocked-categories", default=None, help="CSV list of blocked POI categories")
+    
+    # LLM post-processing
+    parser.add_argument("--llm-enabled", action="store_true", help="Enable LLM post-processing of directions")
+    parser.add_argument("--llm-model", default="gpt-4o-mini", help="LLM model to use")
+    parser.add_argument("--llm-temperature", type=float, default=0.2, help="LLM temperature (0-1)")
+    parser.add_argument("--llm-complexity", choices=["simple", "medium", "complex"], default="simple", help="LLM complexity level: simple (concise), medium (moderate detail), complex (rich narrative)")
+    parser.add_argument("--llm-max-steps", type=int, default=10, help="Max steps for LLM to produce")
+    parser.add_argument("--llm-include-distances", action="store_true", help="Include per-step distances in LLM output")
+    
     return parser.parse_args(argv)
 
 
@@ -126,22 +152,69 @@ def _try_parse_latlon(text: str) -> Optional[Tuple[float, float]]:
         return None
 
 
-def geocode_point(raw: str) -> GeoPoint:
+def _derive_label_from_nearby_features(lat: float, lon: float, radius_m: int = 80) -> Optional[str]:
+    """Try to find a nearby named building or amenity using OSM features.
+    
+    Returns a human-friendly label or None if nothing suitable is found.
+    """
+    try:
+        # Query nearby features that might have useful names
+        tags = {
+            "building": True,
+            "amenity": True,
+            "tourism": True,
+            "leisure": True,
+            "historic": True,
+        }
+        gdf = ox.features_from_point((lat, lon), tags=tags, dist=radius_m)
+        if gdf.empty:
+            return None
+        
+        # Filter to entries with names
+        if "name" not in gdf.columns:
+            return None
+        named = gdf[gdf["name"].notna() & (gdf["name"].astype(str).str.strip() != "")].copy()
+        if named.empty:
+            return None
+        
+        # Compute distances and pick closest
+        from shapely.geometry import Point as ShapelyPoint
+        pt = ShapelyPoint(lon, lat)
+        named["dist"] = named.geometry.apply(lambda g: g.distance(pt))
+        closest = named.sort_values("dist").iloc[0]
+        return str(closest["name"]).strip()
+    except Exception:
+        return None
+
+
+def geocode_point(raw: str, label_override: Optional[str] = None) -> GeoPoint:
     """Convert a user-supplied string into a WGS84 point.
 
     Accepts direct coordinates or any geocodable description OSMnx supports.
+    If label_override is provided, it will be used as the display label.
+    For lat/lon inputs, attempts to derive a nearby named feature as the label.
     """
 
     parsed = _try_parse_latlon(raw)
     if parsed is not None:
         lat, lon = parsed
-        return GeoPoint(lat=lat, lon=lon, label=f"{lat:.5f},{lon:.5f}")
+        if label_override:
+            label = label_override
+        else:
+            # Try to find a nearby named feature
+            derived = _derive_label_from_nearby_features(lat, lon)
+            label = derived if derived else f"{lat:.5f},{lon:.5f}"
+        return GeoPoint(lat=lat, lon=lon, label=label)
+    
     gdf = ox.geocode_to_gdf(raw)
     if gdf.empty:
         raise ValueError(f"Could not geocode location: {raw}")
     geom = gdf.iloc[0].geometry
     centroid = geom.centroid
-    display = str(gdf.iloc[0].get("display_name") or raw)
+    if label_override:
+        display = label_override
+    else:
+        display = str(gdf.iloc[0].get("display_name") or raw)
     return GeoPoint(lat=float(centroid.y), lon=float(centroid.x), label=display)
 
 
@@ -250,16 +323,32 @@ def compute_route(G: nx.MultiDiGraph, start: GeoPoint, end: GeoPoint) -> List[in
     return ox.shortest_path(G, start_node, end_node, weight="length")
 
 
-def _edge_name(data: dict) -> str:
-    """Pick a readable street/path name, falling back to neutral phrasing."""
+def _edge_name(data: dict) -> Tuple[str, str]:
+    """Pick a readable street/path name, falling back to neutral phrasing.
+    
+    Returns (name, facility_type) where facility_type is used when name is generic.
+    facility_type can be "trail", "footpath", or "" (omit).
+    """
 
     name = data.get("name")
     if isinstance(name, list) and name:
         name = name[0]
     if isinstance(name, str) and name.strip():
-        return name
-    # Trails and footpaths are often unnamed; keep output friendly.
-    return "path"
+        return name, ""
+    
+    # No explicit name; check highway tag to pick a friendly facility type
+    highway = data.get("highway", "")
+    if isinstance(highway, list) and highway:
+        highway = highway[0]
+    highway = str(highway).lower()
+    
+    if "trail" in highway or highway in ["path", "track"]:
+        return "path", "trail"
+    if "footway" in highway or highway == "pedestrian":
+        return "path", "footpath"
+    
+    # Generic fallback
+    return "path", ""
 
 
 def _bearing_delta(b1: Optional[float], b2: Optional[float]) -> Optional[float]:
@@ -275,15 +364,16 @@ def _turn_phrase(delta: Optional[float]) -> Optional[str]:
     """Translate a bearing change into a concise instruction word.
 
     We bias toward fewer strong turn words to keep directions readable.
+    Updated thresholds: <25° = continue, <35° = bear, 35-100° = turn, 100-160° = sharp, ≥160° = u-turn.
     """
 
     if delta is None:
         return None
     ad = abs(delta)
-    if ad < 15:
-        return None  # continue
+    if ad < 25:
+        return None  # continue - no new step
     if ad < 35:
-        return "slight left" if delta < 0 else "slight right"
+        return "bear left" if delta < 0 else "bear right"
     if ad < 100:
         return "left" if delta < 0 else "right"
     if ad < 160:
@@ -310,35 +400,88 @@ def _format_distance_m(m: float) -> str:
     return f"{int(round(m))} m"
 
 
+def _detect_start_building(lat: float, lon: float) -> Optional[str]:
+    """Check if the start point is inside a named building polygon.
+    
+    Returns the building name if found, else None.
+    """
+    try:
+        from shapely.geometry import Point as ShapelyPoint
+        pt = ShapelyPoint(lon, lat)
+        
+        # Query buildings within a small radius
+        tags = {"building": True}
+        gdf = ox.features_from_point((lat, lon), tags=tags, dist=50)
+        if gdf.empty or "name" not in gdf.columns:
+            return None
+        
+        # Filter to named buildings that contain the point
+        for idx, row in gdf.iterrows():
+            geom = row.geometry
+            if geom and geom.contains(pt):
+                name = row.get("name")
+                if name and str(name).strip():
+                    return str(name).strip()
+        return None
+    except Exception:
+        return None
+
+
+def _simplify_linestring(line: LineString, tolerance_m: float = 3.0) -> LineString:
+    """Simplify a LineString in WGS84 using a metric tolerance.
+    
+    Projects to 3857, simplifies, then back to 4326.
+    """
+    if line.is_empty or len(line.coords) < 3:
+        return line
+    try:
+        # Project to metric CRS
+        gs = gpd.GeoSeries([line], crs=4326).to_crs(3857)
+        simplified_m = gs.simplify(tolerance_m, preserve_topology=True)
+        back = simplified_m.to_crs(4326)
+        return back.iloc[0]
+    except Exception:
+        return line
+
+
 def build_directions(
     G: nx.MultiDiGraph,
     route: Sequence[int],
-) -> Tuple[List[DirectionStep], LineString, float]:
-    """Convert a node route into readable steps.
+    start_point: GeoPoint,
+    hide_step_distances: bool = False,
+) -> Tuple[List[DirectionStep], LineString, float, Optional[str], Optional[str]]:
+    """Convert a node route into readable steps with improved phrasing and merging.
 
-    Returns the steps, a LineString for the full geometry, and total length in meters.
-    We merge consecutive edges with similar names and bearings to reduce verbosity.
+    Returns:
+        steps: list of DirectionStep
+        line: LineString geometry for the route
+        total_m: total distance in meters
+        pre_step_building: optional "Walk out of <Building>" text
+        pre_step_connector: optional "Walk to <Street>" text
     """
 
     if not route or len(route) < 2:
-        return [], LineString([]), 0.0
+        return [], LineString([]), 0.0, None, None
 
     edges = ox.utils_graph.get_route_edge_attributes(G, route, attribute=None)
     coords: List[Tuple[float, float]] = []
-    steps: List[DirectionStep] = []
 
-    # Build full coordinate chain and per-edge info
+    # Build full coordinate chain and collect edge info
+    @dataclass
+    class EdgeInfo:
+        name: str
+        facility_type: str
+        bearing: Optional[float]
+        length_m: float
+        data: dict
+
+    edge_infos: List[EdgeInfo] = []
     total_m = 0.0
-    current_name: Optional[str] = None
-    current_bearing: Optional[float] = None
-    seg_start_m = 0.0
-    seg_dist_m = 0.0
-    step_start_m = 0.0
 
     for i, data in enumerate(edges):
         length_m = float(data.get("length") or 0.0)
         total_m += length_m
-        seg_dist_m += length_m
+        
         if "geometry" in data and data["geometry"]:
             geom: LineString = data["geometry"]
             if not coords:
@@ -355,51 +498,180 @@ def build_directions(
                     coords.append(coords_u)
                 coords.append(coords_v)
 
-        name = _edge_name(data)
+        name, facility_type = _edge_name(data)
         bearing = data.get("bearing")
-
-        # Decide if we should start a new step based on name/bearing change
-        if current_name is None:
-            current_name = name
-            current_bearing = bearing
-            step_start_m = seg_start_m
-            continue
-
-        delta = _bearing_delta(current_bearing, bearing)
-        turn = _turn_phrase(delta)
-        should_split = (name != current_name) or (turn is not None)
-        if should_split:
-            cardinal = _cardinal_from_bearing(current_bearing)
-            heading = f"Head {cardinal} on {current_name}" if not steps else f"Turn {turn} onto {current_name if name != current_name else current_name}"
-            steps.append(
-                DirectionStep(
-                    text=f"{heading} for {_format_distance_m(seg_dist_m)}",
-                    distance_m=seg_dist_m,
-                    start_m=step_start_m,
-                    end_m=step_start_m + seg_dist_m,
-                )
-            )
-            # Start a new segment
-            current_name = name
-            current_bearing = bearing
-            step_start_m = step_start_m + seg_dist_m
-            seg_dist_m = 0.0
-
-    # Flush tail
-    if seg_dist_m > 0.0 and current_name is not None:
-        cardinal = _cardinal_from_bearing(current_bearing)
-        heading = f"Head {cardinal} on {current_name}" if not steps else f"Continue on {current_name}"
-        steps.append(
-            DirectionStep(
-                text=f"{heading} for {_format_distance_m(seg_dist_m)}",
-                distance_m=seg_dist_m,
-                start_m=step_start_m,
-                end_m=step_start_m + seg_dist_m,
-            )
-        )
+        edge_infos.append(EdgeInfo(name=name, facility_type=facility_type, bearing=bearing, length_m=length_m, data=data))
 
     line = LineString([(lon, lat) for lon, lat in coords])
-    return steps, line, total_m
+    
+    # Simplify geometry to reduce micro-turns
+    line = _simplify_linestring(line, tolerance_m=3.0)
+
+    # Detect start building
+    pre_step_building = _detect_start_building(start_point.lat, start_point.lon)
+    
+    # Detect connector step (if distance to first edge is >10m)
+    pre_step_connector = None
+    if coords:
+        from shapely.geometry import Point as ShapelyPoint
+        first_coord = ShapelyPoint(coords[0])
+        start_pt = ShapelyPoint(start_point.lon, start_point.lat)
+        # Rough distance in degrees (good enough for short distances)
+        dist_deg = first_coord.distance(start_pt)
+        dist_m_approx = dist_deg * 111000  # approximate
+        if dist_m_approx > 10 and edge_infos:
+            first_edge = edge_infos[0]
+            if first_edge.name != "path":
+                pre_step_connector = f"Walk to {first_edge.name}"
+            elif first_edge.facility_type:
+                pre_step_connector = f"Walk to the {first_edge.facility_type}"
+
+    # Merge edges into segments based on name and bearing continuity
+    segments: List[EdgeInfo] = []
+    if not edge_infos:
+        return [], line, total_m, pre_step_building, pre_step_connector
+
+    current_seg = EdgeInfo(
+        name=edge_infos[0].name,
+        facility_type=edge_infos[0].facility_type,
+        bearing=edge_infos[0].bearing,
+        length_m=edge_infos[0].length_m,
+        data=edge_infos[0].data,
+    )
+
+    for i in range(1, len(edge_infos)):
+        edge = edge_infos[i]
+        delta = _bearing_delta(current_seg.bearing, edge.bearing)
+        turn = _turn_phrase(delta)
+        
+        # Should we split?
+        if edge.name != current_seg.name or turn is not None:
+            segments.append(current_seg)
+            current_seg = EdgeInfo(
+                name=edge.name,
+                facility_type=edge.facility_type,
+                bearing=edge.bearing,
+                length_m=edge.length_m,
+                data=edge.data,
+            )
+        else:
+            # Merge into current segment
+            current_seg.length_m += edge.length_m
+            # Keep bearing from later edge for smoother transitions
+            if edge.bearing is not None:
+                current_seg.bearing = edge.bearing
+
+    segments.append(current_seg)
+
+    # Now merge short segments (< 30m) unless strong turn (≥ 85°)
+    merged_segments: List[EdgeInfo] = []
+    i = 0
+    while i < len(segments):
+        seg = segments[i]
+        # Look ahead to see if next segment is short
+        if i + 1 < len(segments):
+            next_seg = segments[i + 1]
+            delta = _bearing_delta(seg.bearing, next_seg.bearing)
+            ad = abs(delta) if delta is not None else 0
+            # Merge if next segment is short and turn is not strong
+            if next_seg.length_m < 30 and ad < 85:
+                # Merge next into current
+                seg.length_m += next_seg.length_m
+                seg.bearing = next_seg.bearing
+                i += 1  # skip next
+                continue
+        merged_segments.append(seg)
+        i += 1
+
+    segments = merged_segments
+
+    # Debounce zig-zags: detect alternating slight turns within ~20m span
+    # (simplified heuristic: look for consecutive segments with opposite slight turns)
+    debounced: List[EdgeInfo] = []
+    i = 0
+    while i < len(segments):
+        seg = segments[i]
+        # Check if this and next form a zig-zag pattern
+        if i + 1 < len(segments):
+            next_seg = segments[i + 1]
+            if seg.length_m + next_seg.length_m < 20:
+                if i > 0:
+                    prev_seg = debounced[-1] if debounced else None
+                    if prev_seg:
+                        delta1 = _bearing_delta(prev_seg.bearing, seg.bearing)
+                        delta2 = _bearing_delta(seg.bearing, next_seg.bearing)
+                        if delta1 and delta2:
+                            # Opposite slight turns
+                            if (abs(delta1) < 35 and abs(delta2) < 35 and
+                                ((delta1 < 0 and delta2 > 0) or (delta1 > 0 and delta2 < 0))):
+                                # Merge all three
+                                prev_seg.length_m += seg.length_m + next_seg.length_m
+                                prev_seg.bearing = next_seg.bearing
+                                i += 2
+                                continue
+        debounced.append(seg)
+        i += 1
+
+    segments = debounced
+
+    # Convert segments into DirectionSteps with proper phrasing
+    steps: List[DirectionStep] = []
+    cumulative_m = 0.0
+
+    for idx, seg in enumerate(segments):
+        is_first = (idx == 0)
+        is_last = (idx == len(segments) - 1)
+        
+        # Determine the instruction text
+        if is_first:
+            # First step: "Walk on <name>"
+            if seg.name == "path":
+                if seg.facility_type:
+                    heading = f"Walk on the {seg.facility_type}"
+                else:
+                    heading = "Walk forward"
+            else:
+                heading = f"Walk on {seg.name}"
+        else:
+            # Not first: check if we need a turn or continuation
+            prev_seg = segments[idx - 1]
+            delta = _bearing_delta(prev_seg.bearing, seg.bearing)
+            turn = _turn_phrase(delta)
+            
+            if turn is None or seg.name == prev_seg.name:
+                # Continue
+                if seg.name == "path":
+                    heading = "Continue"
+                else:
+                    heading = f"Continue on {seg.name}"
+            else:
+                # Turn
+                if seg.name == "path":
+                    # Avoid "onto path"
+                    if seg.facility_type:
+                        heading = f"Turn {turn} onto the {seg.facility_type}"
+                    else:
+                        heading = f"Turn {turn}"
+                else:
+                    heading = f"Turn {turn} onto {seg.name}"
+        
+        # Format with or without distance
+        if hide_step_distances:
+            text = heading
+        else:
+            text = f"{heading} for {_format_distance_m(seg.length_m)}"
+        
+        steps.append(
+            DirectionStep(
+                text=text,
+                distance_m=seg.length_m,
+                start_m=cumulative_m,
+                end_m=cumulative_m + seg.length_m,
+            )
+        )
+        cumulative_m += seg.length_m
+
+    return steps, line, total_m, pre_step_building, pre_step_connector
 
 
 # ---------------------------
@@ -500,17 +772,83 @@ def _segment_side(line_m: LineString, point_m: Point, along_m: float) -> Optiona
     return "left" if cross > 0 else "right"
 
 
+def _clean_poi_name(name: str) -> str:
+    """Strip parenthetical disambiguation like '(Newton)' from POI names."""
+    # Remove trailing parenthetical like "(Newton)" or "(Building)"
+    cleaned = re.sub(r'\s*\([^)]+\)\s*$', '', name)
+    return cleaned.strip()
+
+
+def _filter_poi_categories(
+    df: pd.DataFrame,
+    preferred_categories: Optional[str],
+    blocked_categories: Optional[str],
+) -> pd.DataFrame:
+    """Filter POI dataframe by category preferences.
+    
+    Default: prefer campus/venue categories, drop generic natural/man_made/utilities.
+    """
+    if df.empty or "category" not in df.columns:
+        return df
+    
+    # Parse CSV lists
+    preferred = set()
+    blocked = set()
+    
+    if preferred_categories:
+        preferred = {c.strip().lower() for c in preferred_categories.split(",") if c.strip()}
+    else:
+        # Default preferred
+        preferred = {
+            "building", "library", "museum", "stadium", "theatre", "theater",
+            "college", "university", "school", "chapel", "church", "monument",
+            "memorial", "artwork", "statue", "fountain", "park", "garden",
+        }
+    
+    if blocked_categories:
+        blocked = {c.strip().lower() for c in blocked_categories.split(",") if c.strip()}
+    else:
+        # Default blocked
+        blocked = {
+            "natural", "man_made", "utility", "utilities", "broadcast",
+            "antenna", "mast", "tower", "water", "power",
+        }
+    
+    def should_include(cat: str) -> bool:
+        cat_lower = str(cat).strip().lower()
+        if not cat_lower:
+            return True  # no category = include
+        # Block if in blocked list
+        for b in blocked:
+            if b in cat_lower:
+                return False
+        # If we have preferred list, boost those
+        # (but don't exclude others unless explicitly blocked)
+        return True
+    
+    df = df[df["category"].apply(lambda c: should_include(str(c)))].copy()
+    return df
+
+
 def select_and_order_pois(
     df: pd.DataFrame,
     route_wgs84: LineString,
     max_pois: int,
+    preferred_categories: Optional[str] = None,
+    blocked_categories: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, List[PoiCallout]]:
     """Choose top POIs near the path and order them along the walk.
 
     We balance intrinsic score with perpendicular distance to keep mentions relevant.
+    Now includes category filtering and name cleaning.
     """
 
     if df.empty or route_wgs84.is_empty:
+        return df.head(0), []
+
+    # Filter by categories
+    df = _filter_poi_categories(df, preferred_categories, blocked_categories)
+    if df.empty:
         return df.head(0), []
 
     line_m = _to_3857(route_wgs84).iloc[0]
@@ -546,9 +884,14 @@ def select_and_order_pois(
             else:
                 desc_parts.append(f"rated {float(rating):.1f}")
         description = ", ".join(desc_parts) if desc_parts else "point of interest"
+        
+        # Clean the name
+        raw_name = str(row.get("name") or "Unnamed")
+        cleaned_name = _clean_poi_name(raw_name)
+        
         callouts.append(
             PoiCallout(
-                name=str(row.get("name") or "Unnamed"),
+                name=cleaned_name,
                 description=description,
                 along_m=float(row["along_m"]),
                 side=side,
@@ -558,10 +901,16 @@ def select_and_order_pois(
     return df, callouts
 
 
-def weave_pois_into_steps(steps: List[DirectionStep], callouts: List[PoiCallout]) -> List[str]:
+def weave_pois_into_steps(
+    steps: List[DirectionStep],
+    callouts: List[PoiCallout],
+    max_callouts_per_step: int = 1,
+    callout_style: str = "minimal",
+) -> List[str]:
     """Produce final narrative lines: steps plus nearby POI callouts inline.
 
     We align POIs to the step whose distance range contains the POI position; if none, attach to the next step.
+    Now respects max_callouts_per_step and callout_style.
     """
 
     lines: List[str] = []
@@ -571,13 +920,20 @@ def weave_pois_into_steps(steps: List[DirectionStep], callouts: List[PoiCallout]
     step_num = 1
     while current is not None:
         lines.append(f"{step_num}. {current.text}")
-        # Emit all POIs that fall within this step's span
-        while callout_idx < len(callouts):
+        # Emit POIs that fall within this step's span (up to max per step)
+        step_callout_count = 0
+        while callout_idx < len(callouts) and step_callout_count < max_callouts_per_step:
             c = callouts[callout_idx]
             if c.along_m <= current.end_m + 1e-6:
                 side = f" on your {c.side}" if c.side else ""
-                lines.append(f"   - You'll pass{side} {c.name} ({c.description}).")
+                if callout_style == "descriptive":
+                    # Include full description with category
+                    lines.append(f"   - You'll pass{side} {c.name} ({c.description}).")
+                else:
+                    # Minimal: just name, drop category unless it's useful
+                    lines.append(f"   - You'll pass{side} {c.name}.")
                 callout_idx += 1
+                step_callout_count += 1
             else:
                 break
         current = next(step_iter, None)
@@ -586,7 +942,10 @@ def weave_pois_into_steps(steps: List[DirectionStep], callouts: List[PoiCallout]
     while callout_idx < len(callouts):
         c = callouts[callout_idx]
         side = f" on your {c.side}" if c.side else ""
-        lines.append(f"   - Ahead{side}: {c.name} ({c.description}).")
+        if callout_style == "descriptive":
+            lines.append(f"   - Ahead{side}: {c.name} ({c.description}).")
+        else:
+            lines.append(f"   - Ahead{side}: {c.name}.")
         callout_idx += 1
     return lines
 
@@ -612,8 +971,10 @@ def format_tour_text(
     steps: List[DirectionStep],
     callout_lines: List[str],
     total_m: float,
+    pre_step_building: Optional[str] = None,
+    pre_step_connector: Optional[str] = None,
 ) -> str:
-    """Assemble the final plain-text tour document."""
+    """Assemble the final plain-text tour document with pre-steps and arrival line."""
 
     header = [
         f"Walking tour from: {start.label}",
@@ -622,12 +983,184 @@ def format_tour_text(
         f"Estimated time: {_estimate_walk_time_minutes(total_m)} min",
         "",
         "Directions:",
+        "",
     ]
+    
     body = []
+    
+    # Add pre-steps if present
+    if pre_step_building:
+        body.append(f"Walk out of {pre_step_building}.")
+        body.append("")
+    if pre_step_connector:
+        body.append(f"{pre_step_connector}.")
+        body.append("")
+    
+    # Add main directions
     for line in callout_lines:
         body.append(line)
+    
+    # Add arrival line
+    body.append("")
+    body.append(f"Arrive at {end.label}. This is your destination!")
+    
     footer = ["", "Enjoy your walk!"]
     return "\n".join(header + body + footer)
+
+
+# ---------------------------
+# LLM post-processing
+# ---------------------------
+
+
+def _llm_rewrite_directions(
+    steps: List[DirectionStep],
+    callouts: List[PoiCallout],
+    start_label: str,
+    end_label: str,
+    args: argparse.Namespace,
+) -> Optional[Tuple[List[str], str]]:
+    """Use an LLM to rewrite directions into more natural language.
+    
+    Returns (rewritten_lines, arrival_text) or None on failure.
+    Caches results to avoid redundant API calls.
+    """
+    
+    # Build payload
+    # Collect all words from steps for the allowed names list
+    step_words = set()
+    for s in steps:
+        step_words.update(s.text.split())
+    
+    payload = {
+        "steps": [
+            {"id": i+1, "text": s.text, "distance_m": s.distance_m}
+            for i, s in enumerate(steps)
+        ],
+        "pois": [
+            {"id": i+1, "name": c.name, "side": c.side, "along_m": c.along_m, "description": c.description}
+            for i, c in enumerate(callouts)
+        ],
+        "options": {
+            "maxSteps": args.llm_max_steps,
+            "includeDistances": args.llm_include_distances,
+            "complexity": args.llm_complexity,
+        },
+        "labels": {
+            "start": start_label,
+            "end": end_label,
+        },
+        "allowed_names": [start_label, end_label] + [c.name for c in callouts] + list(step_words),
+    }
+    
+    # Check cache
+    payload_json = json.dumps(payload, sort_keys=True)
+    payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    cache_dir = os.path.join("cache", "llm")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{payload_hash}.json")
+    
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            print("Using cached LLM response.")
+            lines = [item["text"] for item in cached.get("steps", [])]
+            arrival = cached.get("arrival", f"Arrive at {end_label}. This is your destination!")
+            return lines, arrival
+        except Exception as e:
+            print(f"Failed to load cache: {e}")
+    
+    # Call LLM
+    try:
+        # Lazy import to allow running without openai installed
+        try:
+            from openai import OpenAI
+        except ImportError:
+            print("Warning: openai package not installed. Install with: pip install openai")
+            return None
+        
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print("Warning: OPENAI_API_KEY not set. Skipping LLM rewriting.")
+            return None
+        
+        client = OpenAI(api_key=api_key)
+        
+        # Select system prompt based on complexity level
+        complexity = args.llm_complexity
+        
+        if complexity == "simple":
+            system_prompt = (
+                "You rewrite walking directions to be clear, natural, and human-friendly. "
+                "Keep directions concise but conversational - avoid robotic phrasing. "
+                "Only use names and places provided in the input. "
+                "Do not fabricate new landmarks, street names, or buildings. "
+                "Merge micro-steps into smooth, natural instructions. "
+                "Keep the total number of steps small (ideally ≤8). "
+                "Use warm, natural language like 'Head down X', 'Take a left onto Y', 'Continue along Z'. "
+                "Vary your phrasing to sound more human and less mechanical. "
+                "Make it feel like friendly directions from a local, not a GPS. "
+                "Format: return JSON with 'steps' (array of {id, text}) and 'arrival' (string)."
+            )
+        elif complexity == "medium":
+            system_prompt = (
+                "You rewrite walking directions to be clear and helpful with moderate detail. "
+                "Include helpful context and key landmarks to orient the walker. "
+                "Only use names and places provided in the input. "
+                "Do not fabricate new landmarks, street names, or buildings. "
+                "Merge micro-steps into natural instructions. "
+                "Keep around 8-12 steps with useful context. "
+                "Mention notable POIs when they help with navigation. "
+                "Use friendly, conversational language. "
+                "Format: return JSON with 'steps' (array of {id, text}) and 'arrival' (string)."
+            )
+        else:  # complex
+            system_prompt = (
+                "You rewrite walking directions as a rich, detailed narrative tour. "
+                "Create an engaging walking experience with vivid descriptions and context. "
+                "Include surrounding landmarks, architectural details, and interesting facts about places passed. "
+                "Only use names and places provided in the input - enhance their descriptions but don't invent new ones. "
+                "Do not fabricate new landmarks, street names, or buildings. "
+                "Weave POI callouts naturally into the narrative. "
+                "Use descriptive, evocative language that helps the walker visualize the route. "
+                "Can be longer (10-15 steps) to provide a fuller experience. "
+                "Make it feel like a guided tour, not just navigation instructions. "
+                "Format: return JSON with 'steps' (array of {id, text}) and 'arrival' (string)."
+            )
+        
+        
+        user_prompt = (
+            f"Rewrite these walking directions into natural language:\n\n"
+            f"{json.dumps(payload, indent=2)}\n\n"
+            f"Return JSON with 'steps' and 'arrival' fields only."
+        )
+        
+        response = client.chat.completions.create(
+            model=args.llm_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=args.llm_temperature,
+            response_format={"type": "json_object"},
+        )
+        
+        result_text = response.choices[0].message.content
+        result = json.loads(result_text)
+        
+        # Save to cache
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+        
+        lines = [item["text"] for item in result.get("steps", [])]
+        arrival = result.get("arrival", f"Arrive at {end_label}. This is your destination!")
+        
+        return lines, arrival
+        
+    except Exception as e:
+        print(f"LLM rewriting failed: {e}")
+        return None
 
 
 # ---------------------------
@@ -643,12 +1176,15 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     args = parse_args(argv)
     try:
-        start = geocode_point(args.start)
-        end = geocode_point(args.end)
+        # Geocode with label overrides
+        start = geocode_point(args.start, label_override=args.start_label)
+        end = geocode_point(args.end, label_override=args.end_label)
 
         G = load_walk_graph(start, end, args.graph_distance_m)
         route = compute_route(G, start, end)
-        steps, route_line, total_m = build_directions(G, route)
+        steps, route_line, total_m, pre_step_building, pre_step_connector = build_directions(
+            G, route, start, hide_step_distances=args.hide_step_distances
+        )
 
         corridor = build_corridor_polygon(route_line, buffer_meters=int(args.buffer_meters))
         poi_df = fetch_scored_pois_in_corridor(
@@ -658,10 +1194,55 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             google_api_key=args.google_api_key,
             google_radius_m=int(args.google_radius_meters),
         )
-        _, callouts = select_and_order_pois(poi_df, route_line, max_pois=int(args.max_pois))
-        narrative_lines = weave_pois_into_steps(steps, callouts)
+        _, callouts = select_and_order_pois(
+            poi_df,
+            route_line,
+            max_pois=int(args.max_pois),
+            preferred_categories=args.preferred_categories,
+            blocked_categories=args.blocked_categories,
+        )
+        
+        # Optional LLM post-processing
+        if args.llm_enabled:
+            llm_result = _llm_rewrite_directions(steps, callouts, start.label, end.label, args)
+            if llm_result:
+                narrative_lines, arrival_line = llm_result
+                # Use LLM-generated text
+                text = format_tour_text(
+                    start, end, steps, narrative_lines, total_m,
+                    pre_step_building=pre_step_building,
+                    pre_step_connector=pre_step_connector,
+                )
+                # Replace the auto-generated arrival with LLM's
+                text = text.replace(
+                    f"Arrive at {end.label}. This is your destination!",
+                    arrival_line
+                )
+            else:
+                # Fallback to rule-based
+                narrative_lines = weave_pois_into_steps(
+                    steps, callouts,
+                    max_callouts_per_step=args.max_callouts_per_step,
+                    callout_style=args.callout_style,
+                )
+                text = format_tour_text(
+                    start, end, steps, narrative_lines, total_m,
+                    pre_step_building=pre_step_building,
+                    pre_step_connector=pre_step_connector,
+                )
+        else:
+            # Rule-based only
+            narrative_lines = weave_pois_into_steps(
+                steps, callouts,
+                max_callouts_per_step=args.max_callouts_per_step,
+                callout_style=args.callout_style,
+            )
+            text = format_tour_text(
+                start, end, steps, narrative_lines, total_m,
+                pre_step_building=pre_step_building,
+                pre_step_connector=pre_step_connector,
+            )
 
-        text = format_tour_text(start, end, steps, narrative_lines, total_m)
         out_path = os.path.abspath(args.output)
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(text)
@@ -669,6 +1250,8 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return 1
 
 
