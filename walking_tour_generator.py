@@ -1000,8 +1000,8 @@ def format_tour_text(
     """Assemble the final plain-text tour document with pre-steps and arrival line."""
 
     header = [
-        f"Walking tour from: {start.label}",
-        f"Destination: {end.label}",
+        f"Walking tour from: {start.label} ({start.lat}, {start.lon})",
+        f"Destination: {end.label} ({end.lat}, {end.lon})",
         f"Total distance: {_format_distance_m(total_m, units)}",
         f"Estimated time: {_estimate_walk_time_minutes(total_m)} min",
         "",

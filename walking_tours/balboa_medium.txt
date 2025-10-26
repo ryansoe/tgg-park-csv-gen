@@ -7,14 +7,29 @@ Directions:
 
 Walk to the trail.
 
-Start at the Veterans Memorial and walk along the trail for about 82 feet.
-Continue straight for another 34 feet.
-Turn right onto Zoo Place and walk for 30 feet.
-Next, turn left onto Park Boulevard and continue for 770 feet. You'll pass the Balboa Park Carousel and the San Diego Zoo Miniature Railroad on your left.
-After that, turn right onto Village Place and walk for 550 feet.
-Continue on Village Place for an additional 27 feet.
-Finally, turn right onto Old Globe Way and walk for 530 feet until you reach your destination.
+Start at the Veterans Memorial and walk along the trail for about 25 meters.
+Continue straight for another 10 meters.
+Turn right onto Zoo Place and walk for about 9 meters.
+Next, turn left onto Park Boulevard and continue for 240 meters. You'll pass the San Diego Zoo Miniature Railroad on your left.
+After that, turn right onto Village Place and walk for 170 meters.
+Continue on Village Place for another 8 meters.
+Finally, turn right onto Old Globe Way and walk for 160 meters until you reach your destination.
 
-You will arrive at the AirSpace Museum.
+AirSpace Museum
 
 Enjoy your walk!
+
+command used to generate this tour:
+
+python3 walking_tour_generator.py \
+  --start "32.73429,-117.14409" \
+  --end "32.73268,-117.14969" \
+  --start-label "Veterans Memorial" \
+  --end-label "AirSpace Museum" \
+  --output walking_tours/balboa_medium.txt \
+  --max-pois 10 \
+  --llm-enabled \
+  --llm-complexity medium
+
+  notes:
+  haave paremter that could switch from feet to meters  
