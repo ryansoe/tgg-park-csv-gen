@@ -13,3 +13,6 @@ Continue straight for another 200 feet until you reach the Saint Ignatius Statue
 You've arrived at the Saint Ignatius Statue!
 
 Enjoy your walk!
+
+notes:
+- should be more specific about the direction in the beginning, like "from entrance walk along the footpath to your left"

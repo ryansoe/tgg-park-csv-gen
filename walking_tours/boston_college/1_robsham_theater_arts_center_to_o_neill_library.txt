@@ -15,3 +15,6 @@ Finally, walk straight for 410 feet until you reach your destination.
 You will arrive at O'Neill Library.
 
 Enjoy your walk!
+
+notes:
+- directions only say to walk straight, but in reality the route contains turns

@@ -367,17 +367,17 @@ def _turn_phrase(delta: Optional[float]) -> Optional[str]:
     """Translate a bearing change into a concise instruction word.
 
     We bias toward fewer strong turn words to keep directions readable.
-    Updated thresholds: <25° = continue, <35° = bear, 35-100° = turn, 100-160° = sharp, ≥160° = u-turn.
+    Updated thresholds: <15° = continue, <30° = slight, 30-90° = turn, 90-160° = sharp, ≥160° = u-turn.
     """
 
     if delta is None:
         return None
     ad = abs(delta)
-    if ad < 25:
+    if ad < 15:
         return None  # continue - no new step
-    if ad < 35:
-        return "bear left" if delta < 0 else "bear right"
-    if ad < 100:
+    if ad < 30:
+        return "slight left" if delta < 0 else "slight right"
+    if ad < 90:
         return "left" if delta < 0 else "right"
     if ad < 160:
         return "sharp left" if delta < 0 else "sharp right"
@@ -566,6 +566,12 @@ def build_directions(
         delta = _bearing_delta(current_seg.bearing, edge.bearing)
         turn = _turn_phrase(delta)
         
+        # Debug: print bearing changes
+        if os.getenv("DEBUG_TURNS"):
+            delta_str = f"{delta:.1f}°" if delta is not None else "N/A"
+            bear_str = f"{current_seg.bearing:.1f}°→{edge.bearing:.1f}°" if current_seg.bearing and edge.bearing else "N/A"
+            print(f"Edge {i}: {current_seg.name}→{edge.name}, bearing {bear_str}, Δ={delta_str}, turn={turn}")
+        
         # Should we split?
         if edge.name != current_seg.name or turn is not None:
             segments.append(current_seg)
@@ -579,13 +585,19 @@ def build_directions(
         else:
             # Merge into current segment
             current_seg.length_m += edge.length_m
-            # Keep bearing from later edge for smoother transitions
-            if edge.bearing is not None:
-                current_seg.bearing = edge.bearing
+            # Keep original bearing for accurate cumulative turn detection
+            # DO NOT update bearing - this was causing turns to be hidden!
 
     segments.append(current_seg)
+    
+    # Debug: show initial segments created
+    if os.getenv("DEBUG_TURNS"):
+        print(f"\n=== Initial segments: {len(segments)} ===")
+        for i, seg in enumerate(segments):
+            bear_str = f"{seg.bearing:.1f}°" if seg.bearing else "N/A"
+            print(f"  Seg {i}: {seg.name}, bearing={bear_str}, length={seg.length_m:.1f}m")
 
-    # Now merge short segments (< 30m) unless strong turn (≥ 85°)
+    # Now merge short segments (< 20m) unless moderate turn (≥ 60°)
     merged_segments: List[EdgeInfo] = []
     i = 0
     while i < len(segments):
@@ -596,10 +608,10 @@ def build_directions(
             delta = _bearing_delta(seg.bearing, next_seg.bearing)
             ad = abs(delta) if delta is not None else 0
             # Merge if next segment is short and turn is not strong
-            if next_seg.length_m < 30 and ad < 85:
+            if next_seg.length_m < 20 and ad < 60:
                 # Merge next into current
                 seg.length_m += next_seg.length_m
-                seg.bearing = next_seg.bearing
+                # Keep original bearing for cumulative turn detection
                 i += 1  # skip next
                 continue
         merged_segments.append(seg)
@@ -624,11 +636,11 @@ def build_directions(
                         delta2 = _bearing_delta(seg.bearing, next_seg.bearing)
                         if delta1 and delta2:
                             # Opposite slight turns
-                            if (abs(delta1) < 35 and abs(delta2) < 35 and
+                            if (abs(delta1) < 30 and abs(delta2) < 30 and
                                 ((delta1 < 0 and delta2 > 0) or (delta1 > 0 and delta2 < 0))):
                                 # Merge all three
                                 prev_seg.length_m += seg.length_m + next_seg.length_m
-                                prev_seg.bearing = next_seg.bearing
+                                # Keep original bearing for cumulative turn detection
                                 i += 2
                                 continue
         debounced.append(seg)
@@ -646,28 +658,38 @@ def build_directions(
         
         # Determine the instruction text
         if is_first:
-            # First step: "Walk on <name>"
+            # First step: "Walk on <name>" with initial direction
+            # Add cardinal direction for orientation
+            cardinal = _cardinal_from_bearing(seg.bearing)
+            direction_prefix = f" {cardinal.lower()}" if cardinal else ""
+            
             if seg.name == "path":
                 if seg.facility_type:
-                    heading = f"Walk on the {seg.facility_type}"
+                    heading = f"Walk{direction_prefix} on the {seg.facility_type}"
                 else:
-                    heading = "Walk forward"
+                    heading = f"Walk{direction_prefix}"
             else:
-                heading = f"Walk on {seg.name}"
+                heading = f"Walk{direction_prefix} on {seg.name}"
         else:
             # Not first: check if we need a turn or continuation
             prev_seg = segments[idx - 1]
             delta = _bearing_delta(prev_seg.bearing, seg.bearing)
             turn = _turn_phrase(delta)
             
-            if turn is None or seg.name == prev_seg.name:
-                # Continue
+            if turn is None and seg.name == prev_seg.name:
+                # Continue on same path
                 if seg.name == "path":
                     heading = "Continue"
                 else:
                     heading = f"Continue on {seg.name}"
+            elif turn is None:
+                # Name changed but no turn (e.g., transitioning between streets)
+                if seg.name == "path":
+                    heading = "Continue"
+                else:
+                    heading = f"Continue onto {seg.name}"
             else:
-                # Turn
+                # Turn detected
                 if seg.name == "path":
                     # Avoid "onto path"
                     if seg.facility_type:
@@ -1036,6 +1058,57 @@ def format_tour_text(
 # ---------------------------
 
 
+def _count_turns(text_lines: List[str]) -> int:
+    """Count the number of turn instructions in direction text.
+    
+    Looks for turn-related words like 'left', 'right', 'turn', 'bear', 'sharp', etc.
+    """
+    turn_count = 0
+    turn_keywords = [
+        'left', 'right', 'turn', 'bear', 'sharp', 'u-turn',
+        'slight left', 'slight right', 'bear left', 'bear right',
+        'sharp left', 'sharp right'
+    ]
+    
+    for line in text_lines:
+        line_lower = line.lower()
+        # Count each turn keyword occurrence
+        for keyword in turn_keywords:
+            if keyword in line_lower:
+                turn_count += 1
+                break  # Count only once per line
+    
+    return turn_count
+
+
+def _validate_llm_turns(original_steps: List[DirectionStep], llm_lines: List[str]) -> bool:
+    """Validate that LLM output preserves most turns from original steps.
+    
+    Returns True if LLM preserved at least 70% of turns, False otherwise.
+    """
+    # Count turns in original steps
+    original_texts = [step.text for step in original_steps]
+    original_turn_count = _count_turns(original_texts)
+    
+    # Count turns in LLM output
+    llm_turn_count = _count_turns(llm_lines)
+    
+    # If there were no turns originally, validation passes
+    if original_turn_count == 0:
+        return True
+    
+    # Check if LLM preserved at least 70% of turns
+    preservation_ratio = llm_turn_count / original_turn_count
+    
+    if preservation_ratio < 0.7:
+        print(f"Warning: LLM output may have lost turns. "
+              f"Original: {original_turn_count} turns, LLM: {llm_turn_count} turns "
+              f"({preservation_ratio:.1%} preserved)")
+        return False
+    
+    return True
+
+
 def _llm_rewrite_directions(
     steps: List[DirectionStep],
     callouts: List[PoiCallout],
@@ -1090,6 +1163,8 @@ def _llm_rewrite_directions(
             print("Using cached LLM response.")
             lines = [item["text"] for item in cached.get("steps", [])]
             arrival = cached.get("arrival", f"Arrive at {end_label}. This is your destination!")
+            # Validate cached results too
+            _validate_llm_turns(steps, lines)
             return lines, arrival
         except Exception as e:
             print(f"Failed to load cache: {e}")
@@ -1117,10 +1192,13 @@ def _llm_rewrite_directions(
             system_prompt = (
                 "You rewrite walking directions to be clear, natural, and human-friendly. "
                 "Keep directions concise but conversational - avoid robotic phrasing. "
+                "CRITICAL: Preserve all turns and directional changes from the original steps. "
+                "Do not simplify actual turns into 'walk straight' or 'continue' - if the input has a turn, include it. "
+                "Include initial compass direction (N/S/E/W) or relative direction for the first step. "
                 "Only use names and places provided in the input. "
                 "Do not fabricate new landmarks, street names, or buildings. "
-                "Merge micro-steps into smooth, natural instructions. "
-                "Keep the total number of steps small (ideally ≤8). "
+                "Merge micro-steps into smooth, natural instructions only when they maintain the same direction. "
+                "Keep the total number of steps small (ideally ≤8) but preserve all turns. "
                 "Use warm, natural language like 'Head down X', 'Take a left onto Y', 'Continue along Z'. "
                 "Vary your phrasing to sound more human and less mechanical. "
                 "Make it feel like friendly directions from a local, not a GPS. "
@@ -1129,11 +1207,14 @@ def _llm_rewrite_directions(
         elif complexity == "medium":
             system_prompt = (
                 "You rewrite walking directions to be clear and helpful with moderate detail. "
+                "CRITICAL: Preserve all turns and directional changes from the original steps. "
+                "Do not simplify actual turns into 'walk straight' or 'continue' - if the input has a turn, include it. "
+                "Include initial compass direction (N/S/E/W) or relative direction for the first step. "
                 "Include helpful context and key landmarks to orient the walker. "
                 "Only use names and places provided in the input. "
                 "Do not fabricate new landmarks, street names, or buildings. "
-                "Merge micro-steps into natural instructions. "
-                "Keep around 8-12 steps with useful context. "
+                "Merge micro-steps into natural instructions only when they maintain the same direction. "
+                "Keep around 8-12 steps with useful context, ensuring all turns are preserved. "
                 "Mention notable POIs when they help with navigation. "
                 "Use friendly, conversational language. "
                 "Format: return JSON with 'steps' (array of {id, text}) and 'arrival' (string)."
@@ -1141,13 +1222,16 @@ def _llm_rewrite_directions(
         else:  # complex
             system_prompt = (
                 "You rewrite walking directions as a rich, detailed narrative tour. "
+                "CRITICAL: Preserve all turns and directional changes from the original steps. "
+                "Do not simplify actual turns into 'walk straight' or 'continue' - if the input has a turn, include it. "
+                "Include initial compass direction (N/S/E/W) or relative direction for the first step. "
                 "Create an engaging walking experience with vivid descriptions and context. "
                 "Include surrounding landmarks, architectural details, and interesting facts about places passed. "
                 "Only use names and places provided in the input - enhance their descriptions but don't invent new ones. "
                 "Do not fabricate new landmarks, street names, or buildings. "
                 "Weave POI callouts naturally into the narrative. "
                 "Use descriptive, evocative language that helps the walker visualize the route. "
-                "Can be longer (10-15 steps) to provide a fuller experience. "
+                "Can be longer (10-15 steps) to provide a fuller experience while preserving all directional changes. "
                 "Make it feel like a guided tour, not just navigation instructions. "
                 "Format: return JSON with 'steps' (array of {id, text}) and 'arrival' (string)."
             )
@@ -1178,6 +1262,9 @@ def _llm_rewrite_directions(
         
         lines = [item["text"] for item in result.get("steps", [])]
         arrival = result.get("arrival", f"Arrive at {end_label}. This is your destination!")
+        
+        # Validate that turns were preserved
+        _validate_llm_turns(steps, lines)
         
         return lines, arrival
         

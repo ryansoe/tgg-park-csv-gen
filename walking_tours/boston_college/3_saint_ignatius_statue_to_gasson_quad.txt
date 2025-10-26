@@ -13,3 +13,5 @@ Continue straight for another 110 feet until you reach Gasson Quad.
 You've arrived at Gasson Quad!
 
 Enjoy your walk!
+
+notes: says to go straight, but the route contains turns, should be more specific about the direction on the footpath

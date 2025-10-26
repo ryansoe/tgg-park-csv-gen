@@ -15,3 +15,6 @@ Finally, walk for 82 feet to reach your destination.
 You will arrive at Bapst Library.
 
 Enjoy your walk!
+
+notes:
+again, lacking actual directions. should the user turn left, right, etc?
