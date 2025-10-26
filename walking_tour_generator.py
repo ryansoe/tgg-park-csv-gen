@@ -125,6 +125,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--llm-max-steps", type=int, default=10, help="Max steps for LLM to produce")
     parser.add_argument("--llm-include-distances", action="store_true", help="Include per-step distances in LLM output")
     
+    # Unit system
+    parser.add_argument("--units", choices=["metric", "imperial"], default="imperial", help="Unit system: metric (m/km) or imperial (ft/mi)")
+    
     return parser.parse_args(argv)
 
 
@@ -389,15 +392,33 @@ def _cardinal_from_bearing(b: Optional[float]) -> Optional[str]:
     return dirs[idx]
 
 
-def _format_distance_m(m: float) -> str:
-    """Readable walking distance using miles for longer segments and meters for very short ones."""
-
-    mi = m / 1609.344
-    if mi >= 0.25:
-        return f"{mi:.2f} mi"
-    if m >= 100:
-        return f"{int(round(m, -1))} m"
-    return f"{int(round(m))} m"
+def _format_distance_m(m: float, units: str = "imperial") -> str:
+    """Readable walking distance in metric (m/km) or imperial (ft/mi) units.
+    
+    Args:
+        m: Distance in meters
+        units: "metric" or "imperial"
+    
+    Returns:
+        Formatted distance string
+    """
+    if units == "metric":
+        # Metric: use km for longer distances, m for shorter
+        km = m / 1000.0
+        if km >= 0.5:
+            return f"{km:.2f} km"
+        if m >= 100:
+            return f"{int(round(m, -1))} m"
+        return f"{int(round(m))} m"
+    else:
+        # Imperial: use miles for longer distances, feet for shorter
+        ft = m * 3.28084
+        mi = m / 1609.344
+        if mi >= 0.25:
+            return f"{mi:.2f} mi"
+        if ft >= 100:
+            return f"{int(round(ft, -1))} ft"
+        return f"{int(round(ft))} ft"
 
 
 def _detect_start_building(lat: float, lon: float) -> Optional[str]:
@@ -449,6 +470,7 @@ def build_directions(
     route: Sequence[int],
     start_point: GeoPoint,
     hide_step_distances: bool = False,
+    units: str = "imperial",
 ) -> Tuple[List[DirectionStep], LineString, float, Optional[str], Optional[str]]:
     """Convert a node route into readable steps with improved phrasing and merging.
 
@@ -659,7 +681,7 @@ def build_directions(
         if hide_step_distances:
             text = heading
         else:
-            text = f"{heading} for {_format_distance_m(seg.length_m)}"
+            text = f"{heading} for {_format_distance_m(seg.length_m, units)}"
         
         steps.append(
             DirectionStep(
@@ -973,13 +995,14 @@ def format_tour_text(
     total_m: float,
     pre_step_building: Optional[str] = None,
     pre_step_connector: Optional[str] = None,
+    units: str = "imperial",
 ) -> str:
     """Assemble the final plain-text tour document with pre-steps and arrival line."""
 
     header = [
         f"Walking tour from: {start.label}",
         f"Destination: {end.label}",
-        f"Total distance: {_format_distance_m(total_m)}",
+        f"Total distance: {_format_distance_m(total_m, units)}",
         f"Estimated time: {_estimate_walk_time_minutes(total_m)} min",
         "",
         "Directions:",
@@ -1183,7 +1206,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         G = load_walk_graph(start, end, args.graph_distance_m)
         route = compute_route(G, start, end)
         steps, route_line, total_m, pre_step_building, pre_step_connector = build_directions(
-            G, route, start, hide_step_distances=args.hide_step_distances
+            G, route, start, hide_step_distances=args.hide_step_distances, units=args.units
         )
 
         corridor = build_corridor_polygon(route_line, buffer_meters=int(args.buffer_meters))
@@ -1212,6 +1235,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
                     start, end, steps, narrative_lines, total_m,
                     pre_step_building=pre_step_building,
                     pre_step_connector=pre_step_connector,
+                    units=args.units,
                 )
                 # Replace the auto-generated arrival with LLM's
                 text = text.replace(
@@ -1229,6 +1253,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
                     start, end, steps, narrative_lines, total_m,
                     pre_step_building=pre_step_building,
                     pre_step_connector=pre_step_connector,
+                    units=args.units,
                 )
         else:
             # Rule-based only
@@ -1241,6 +1266,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
                 start, end, steps, narrative_lines, total_m,
                 pre_step_building=pre_step_building,
                 pre_step_connector=pre_step_connector,
+                units=args.units,
             )
 
         out_path = os.path.abspath(args.output)
