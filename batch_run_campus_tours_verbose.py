@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 
+"""
+Verbose version of batch_run_campus_tours.py with progress tracking.
+Shows detailed progress for debugging slow operations.
+"""
+
 import argparse
 import csv
 import os
 import re
 import sys
+import time
 from itertools import combinations
 from typing import List, Optional, Tuple
 
 from walking_tour_generator import run as run_walking_tour
 
 
-def _read_campus_pois(csv_path: str, school_filter: Optional[str] = None) -> List[Tuple[str, str, str, str]]:
+def _read_campus_pois(csv_path: str, school_filter: Optional[str] = None) -> List[Tuple[str, str, str, str, str]]:
     """Read campus POIs from CSV and optionally filter by school name.
     
     Returns list of (school_name, coordinates, location_name, lat, lon) tuples.
@@ -54,7 +60,7 @@ def _slugify(name: str) -> str:
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Batch generate walking tours between campus POIs"
+        description="Batch generate walking tours between campus POIs (VERBOSE)"
     )
     parser.add_argument(
         "--campus-csv",
@@ -83,32 +89,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-pois",
         type=int,
-        default=20,
+        default=10,
         help="Max number of POIs to include per tour",
     )
     parser.add_argument(
         "--buffer-meters",
         type=int,
-        default=150,
+        default=100,
         help="Half-width corridor for POI search",
-    )
-    parser.add_argument(
-        "--max-callouts-per-step",
-        type=int,
-        default=2,
-        help="Max POI callouts per direction step",
-    )
-    parser.add_argument(
-        "--min-poi-score",
-        type=float,
-        default=0.5,
-        help="Minimum POI score to include",
-    )
-    parser.add_argument(
-        "--callout-style",
-        choices=["minimal", "descriptive"],
-        default="descriptive",
-        help="POI callout verbosity (default: descriptive)",
     )
     parser.add_argument(
         "--llm-enabled",
@@ -139,6 +127,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=None,
         help="Google API key (or set GOOGLE_MAPS_API_KEY env var)",
     )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=180,
+        help="Timeout per tour in seconds (default: 180)",
+    )
     return parser.parse_args(argv)
 
 
@@ -146,14 +140,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     
     # Read and filter POIs
-    print(f"Reading POIs from {args.campus_csv}...")
+    print(f"📁 Reading POIs from {args.campus_csv}...")
     pois = _read_campus_pois(args.campus_csv, school_filter=args.school)
     
     if not pois:
-        print(f"Error: No POIs found for school '{args.school}'", file=sys.stderr)
+        print(f"❌ Error: No POIs found for school '{args.school}'", file=sys.stderr)
         return 1
     
-    print(f"Found {len(pois)} POIs for {args.school}")
+    print(f"✓ Found {len(pois)} POIs for {args.school}")
     for i, (school, coords, location, lat, lon) in enumerate(pois, 1):
         print(f"  {i}. {location} ({coords})")
     
@@ -161,7 +155,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     school_slug = _slugify(args.school)
     output_dir = os.path.join(args.output_dir, school_slug)
     os.makedirs(output_dir, exist_ok=True)
-    print(f"\nOutput directory: {output_dir}")
+    print(f"\n📂 Output directory: {output_dir}")
     
     # Generate tours based on mode
     tours = []
@@ -176,9 +170,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         for start_poi, end_poi in combinations(pois, 2):
             tours.append((start_poi, end_poi))
     
-    print(f"\nGenerating {len(tours)} tours in '{args.mode}' mode...")
+    print(f"\n🚶 Generating {len(tours)} tours in '{args.mode}' mode...")
     
     successes = 0
+    failures = []
+    
     for idx, (start_poi, end_poi) in enumerate(tours, 1):
         start_school, start_coords, start_location, start_lat, start_lon = start_poi
         end_school, end_coords, end_location, end_lat, end_lon = end_poi
@@ -188,8 +184,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         end_slug = _slugify(end_location)
         output_file = os.path.join(output_dir, f"{idx}_{start_slug}_to_{end_slug}.txt")
         
-        print(f"\n[{idx}/{len(tours)}] {start_location} → {end_location}")
-        print(f"  Output: {output_file}")
+        print(f"\n{'='*60}")
+        print(f"[{idx}/{len(tours)}] {start_location} → {end_location}")
+        print(f"Output: {output_file}")
+        print(f"{'='*60}")
         
         # Build command line arguments for walking_tour_generator
         tour_args = [
@@ -200,9 +198,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             "--output", output_file,
             "--max-pois", str(args.max_pois),
             "--buffer-meters", str(args.buffer_meters),
-            "--max-callouts-per-step", str(args.max_callouts_per_step),
-            "--min-poi-score", str(args.min_poi_score),
-            "--callout-style", args.callout_style,
         ]
         
         if args.llm_enabled:
@@ -217,19 +212,40 @@ def main(argv: Optional[List[str]] = None) -> int:
             if args.google_api_key:
                 tour_args.extend(["--google-api-key", args.google_api_key])
         
+        start_time = time.time()
         try:
+            print(f"⏳ Starting tour generation...")
             result = run_walking_tour(tour_args)
+            elapsed = time.time() - start_time
+            
             if result == 0:
                 successes += 1
-                print(f"  ✓ Success")
+                print(f"✓ Success (took {elapsed:.1f}s)")
             else:
-                print(f"  ✗ Failed with code {result}", file=sys.stderr)
+                failures.append((idx, start_location, end_location, f"Exit code {result}"))
+                print(f"✗ Failed with code {result} (took {elapsed:.1f}s)", file=sys.stderr)
+        except KeyboardInterrupt:
+            print(f"\n\n⚠️  Interrupted by user after {time.time() - start_time:.1f}s")
+            print(f"\nProgress: {successes}/{idx} tours completed successfully")
+            return 130
         except Exception as e:
-            print(f"  ✗ Error: {e}", file=sys.stderr)
+            elapsed = time.time() - start_time
+            failures.append((idx, start_location, end_location, str(e)))
+            print(f"✗ Error after {elapsed:.1f}s: {e}", file=sys.stderr)
     
     print(f"\n{'='*60}")
-    print(f"Batch completed: {successes}/{len(tours)} tours generated successfully")
-    print(f"Output directory: {output_dir}")
+    print(f"📊 Batch Summary")
+    print(f"{'='*60}")
+    print(f"✓ Successful: {successes}/{len(tours)}")
+    print(f"✗ Failed: {len(failures)}/{len(tours)}")
+    print(f"📂 Output: {output_dir}")
+    
+    if failures:
+        print(f"\n❌ Failed tours:")
+        for idx, start, end, error in failures:
+            print(f"  [{idx}] {start} → {end}")
+            print(f"      Error: {error}")
+    
     return 0 if successes == len(tours) else 1
 
 

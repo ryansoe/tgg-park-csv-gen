@@ -6,6 +6,7 @@
 After investigating why turns still don't appear, I found **the critical bug** in `build_directions()` (lines 564-586):
 
 When edges are merged, the code updates the segment's bearing:
+
 ```python
 else:
     # Merge into current segment
